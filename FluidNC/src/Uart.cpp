@@ -20,6 +20,7 @@ static void uart_driver_n_install(void* arg) {
 void Uart::begin(unsigned long baud, UartData dataBits, UartStop stopBits, UartParity parity) {
     //    uart_driver_delete(_uart_num);
     uart_config_t conf;
+    conf.source_clk          = UART_SCLK_APB;
     conf.baud_rate           = baud;
     conf.data_bits           = uart_word_length_t(_dataBits);
     conf.parity              = uart_parity_t(_parity);
@@ -49,7 +50,7 @@ void Uart::begin() {
     }
 
     begin(_baud, _dataBits, _stopBits, _parity);
-    config_message("UART", String(_uart_num, 10).c_str());
+    config_message("UART", std::to_string(_uart_num).c_str());
 }
 
 int Uart::read() {

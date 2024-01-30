@@ -7,17 +7,24 @@
 namespace WebUI {
     // Constructor.  If _pretty is true, newlines are
     // inserted into the JSON string for easy reading.
-    JSONencoder::JSONencoder(bool pretty, Channel* channel) : pretty(pretty), level(0), _channel(channel), category("nvs") {
+    JSONencoder::JSONencoder(bool pretty, Channel* channel) : pretty(pretty), level(0), _str(&linebuf), _channel(channel), category("nvs") {
         count[level] = 0;
     }
 
     JSONencoder::JSONencoder(bool pretty, std::string* str) : pretty(pretty), level(0), _str(str), category("nvs") { count[level] = 0; }
 
+    void JSONencoder::flush() {
+        if (_channel && (*_str).length()) {
+            // Output to channels is encapsulated in [MSG:JSON:...]
+            (*_channel).out_acked(*_str, "JSON:");
+            //            *_str = "";
+            (*_str).clear();
+        }
+    }
     void JSONencoder::add(char c) {
-        if (_str) {
-            (*_str) += c;
-        } else {
-            linebuf += c;
+        (*_str) += c;
+        if (_channel && (*_str).length() >= 100) {
+            flush();
         }
     }
 
@@ -100,23 +107,22 @@ namespace WebUI {
     // Private function to increment the nesting level.
     void JSONencoder::dec_level() { --level; }
 
+    void JSONencoder::indent() {
+        for (int i = 0; i < 2 * level; i++) {
+            add(' ');
+        }
+    }
+
+    void JSONencoder::string(const char* s) {
+        comma_line();
+        quoted(s);
+    }
     // Private function to implement pretty-printing
     void JSONencoder::line() {
-        if (_str) {
+        if (!_channel) {
             if (pretty) {
                 add('\n');
-                linebuf = "";
-                for (int i = 0; i < 2 * level; i++) {
-                    add(' ');
-                }
-            }
-        } else {
-            // Always pretty print to a channel, because channels
-            // cannot necessary handle really long lines.
-            log_to(*_channel, linebuf);
-            linebuf = "";
-            for (int i = 0; i < 2 * level; i++) {
-                add(' ');
+                indent();
             }
         }
     }
@@ -129,6 +135,7 @@ namespace WebUI {
     void JSONencoder::end() {
         end_object();
         line();
+        flush();
     }
 
     // Starts a member element.
@@ -151,6 +158,16 @@ namespace WebUI {
         dec_level();
         line();
         add(']');
+    }
+
+    // Begins the creation of a member whose value is an object.
+    // Call end_object() to close the member
+    void JSONencoder::begin_member_object(const char* tag) {
+        comma_line();
+        quoted(tag);
+        add(':');
+        add('{');
+        inc_level();
     }
 
     // Starts an object with {.
@@ -180,14 +197,8 @@ namespace WebUI {
         quoted(value.c_str());
     }
 
-    // Creates a "tag":"value" member from an Arduino string
-    void JSONencoder::member(const char* tag, String value) {
-        begin_member(tag);
-        quoted(value.c_str());
-    }
-
     // Creates a "tag":"value" member from an integer
-    void JSONencoder::member(const char* tag, int value) { member(tag, String(value)); }
+    void JSONencoder::member(const char* tag, int value) { member(tag, std::to_string(value)); }
 
     // Creates an Esp32_WebUI configuration item specification from
     // a value passed in as a C-style string.
@@ -208,7 +219,7 @@ namespace WebUI {
     // Creates an Esp32_WebUI configuration item specification from
     // an integer value.
     void JSONencoder::begin_webui(const char* brief, const char* full, const char* type, int val) {
-        begin_webui(brief, full, type, String(val).c_str());
+        begin_webui(brief, full, type, std::to_string(val).c_str());
     }
 
     // Creates an Esp32_WebUI configuration item specification from

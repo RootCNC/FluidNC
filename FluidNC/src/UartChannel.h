@@ -12,10 +12,13 @@ private:
     Lineedit* _lineedit;
     Uart*     _uart;
 
-    int _uart_num = 0;
+    int _uart_num           = 0;
+    int _report_interval_ms = 0;
+
+    const int _ack_timeout = 2000;
 
 public:
-    UartChannel(bool addCR = false);
+    UartChannel(int num, bool addCR = false);
 
     void init();
     void init(Uart* uart);
@@ -30,16 +33,22 @@ public:
     int read() override;
 
     // Channel methods
-    int      rx_buffer_available() override;
-    void     flushRx() override;
-    size_t   timedReadBytes(char* buffer, size_t length, TickType_t timeout);
-    size_t   timedReadBytes(uint8_t* buffer, size_t length, TickType_t timeout) { return timedReadBytes((char*)buffer, length, timeout); };
-    bool     realtimeOkay(char c) override;
-    bool     lineComplete(char* line, char c) override;
-    Channel* pollLine(char* line) override;
+    int    rx_buffer_available() override;
+    void   flushRx() override;
+    size_t timedReadBytes(char* buffer, size_t length, TickType_t timeout);
+    size_t timedReadBytes(uint8_t* buffer, size_t length, TickType_t timeout) { return timedReadBytes((char*)buffer, length, timeout); };
+    bool   realtimeOkay(char c) override;
+    bool   lineComplete(char* line, char c) override;
+
+    void out(const std::string& s, const char* tag) override;
+    void out_acked(const std::string& s, const char* tag) override;
 
     // Configuration methods
-    void group(Configuration::HandlerBase& handler) override { handler.item("uart_num", _uart_num); }
+    void group(Configuration::HandlerBase& handler) override {
+        handler.item("report_interval_ms", _report_interval_ms);
+        handler.item("uart_num", _uart_num);
+        handler.item("message_level", _message_level, messageLevels2);
+    }
 };
 
 extern UartChannel Uart0;

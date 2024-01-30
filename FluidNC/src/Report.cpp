@@ -45,6 +45,10 @@
 EspClass esp;
 #endif
 
+volatile bool protocol_pin_changed = false;
+
+std::string report_pin_string;
+
 portMUX_TYPE mmux = portMUX_INITIALIZER_UNLOCKED;
 
 void _notify(const char* title, const char* msg) {
@@ -121,6 +125,7 @@ std::map<Message, const char*> MessageText = {
     { Message::RestoreDefaults, "Restoring defaults" },
     { Message::SpindleRestore, "Restoring spindle" },
     { Message::SleepMode, "Sleeping" },
+    { Message::HardStop, "Hard stop" },
     { Message::ConfigAlarmLock, "Configuration is invalid. Check boot messages for ERR's." },
     // Handled separately due to numeric argument
     // { Message::FileQuit, "Reset during file job at line: %d" },
@@ -135,6 +140,12 @@ void report_feedback_message(Message message) {  // ok to send to all channels
     auto it = MessageText.find(message);
     if (it != MessageText.end()) {
         log_info(it->second);
+    }
+}
+void report_error_message(Message message) {  // ok to send to all channels
+    auto it = MessageText.find(message);
+    if (it != MessageText.end()) {
+        log_error(it->second);
     }
 }
 
@@ -156,7 +167,7 @@ const char* radio =
 
 // Welcome message
 void report_init_message(Channel& channel) {
-    log_to(channel, "");  // Empty line for spacer
+    log_string(channel, "");  // Empty line for spacer
     LogStream   msg(channel, "");
     const char* p = start_message->get();
     char        c;
@@ -198,7 +209,7 @@ void report_probe_parameters(Channel& channel) {
     float print_position[MAX_N_AXIS];
     motor_steps_to_mpos(print_position, probe_steps);
 
-    log_to(channel, "[PRB:", report_util_axis_values(print_position) << ":" << probe_succeeded);
+    log_stream(channel, "[PRB:" << report_util_axis_values(print_position) << ":" << probe_succeeded);
 }
 
 // Prints NGC parameters (coordinate offsets, probing)
@@ -215,17 +226,17 @@ void report_ngc_coord(CoordIndex coord, Channel& channel) {
         }
         std::ostringstream msg;
         msg << std::fixed << std::setprecision(decimals) << tlo;
-        log_to(channel, "[TLO:", msg.str());
+        log_stream(channel, "[TLO:" << msg.str());
         return;
     }
     if (coord == CoordIndex::G92) {  // Non-persistent G92 offset
-        log_to(channel, "[G92:", report_util_axis_values(gc_state.coord_offset));
+        log_stream(channel, "[G92:" << report_util_axis_values(gc_state.coord_offset));
         return;
     }
     // Persistent offsets G54 - G59, G28, and G30
-    String name = coords[coord]->getName();
+    std::string name(coords[coord]->getName());
     name += ":";
-    log_to(channel, "[", name.c_str() << report_util_axis_values(coords[coord]->get()));
+    log_stream(channel, "[" << name << report_util_axis_values(coords[coord]->get()));
 }
 void report_ngc_parameters(Channel& channel) {
     for (auto coord = CoordIndex::Begin; coord < CoordIndex::End; ++coord) {
@@ -369,12 +380,12 @@ void report_gcode_modes(Channel& channel) {
     int digits = config->_reportInches ? 1 : 0;
     msg << " F" << std::fixed << std::setprecision(digits) << gc_state.feed_rate;
     msg << " S" << uint32_t(gc_state.spindle_speed);
-    log_to(channel, "[GC:", msg.str())
+    log_stream(channel, "[GC:" << msg.str())
 }
 
 // Prints build info line
 void report_build_info(const char* line, Channel& channel) {
-    log_to(channel, "[VER:", grbl_version << " FluidNC " << git_info << ":" << line);
+    log_stream(channel, "[VER:" << grbl_version << " FluidNC " << git_info << ":" << line);
 
     // The option message is included for backwards compatibility but
     // is not particularly useful for FluidNC, which has runtime
@@ -403,7 +414,7 @@ void report_build_info(const char* line, Channel& channel) {
     if (!FORCE_BUFFER_SYNC_DURING_WCO_CHANGE) {
         msg += "W";  // Shown when disabled.
     }
-    log_to(channel, "[OPT:", msg);
+    log_stream(channel, "[OPT:" << msg);
 
     log_msg_to(channel, "Machine: " << config->_name);
 
@@ -427,7 +438,7 @@ void report_build_info(const char* line, Channel& channel) {
 // Prints the character string line that was received, which has been pre-parsed,
 // and has been sent into protocol_execute_line() routine to be executed.
 void report_echo_line_received(char* line, Channel& channel) {
-    log_to(channel, "[echo: ", line);
+    log_stream(channel, "[echo: " << line);
 }
 
 // Calculate the position for status reports.
@@ -463,6 +474,7 @@ const char* state_name() {
             return "Jog";
         case State::Homing:
             return "Home";
+        case State::Critical:
         case State::ConfigAlarm:
         case State::Alarm:
             return "Alarm";
@@ -483,15 +495,10 @@ const char* state_name() {
     return "";
 }
 
-static std::string pinString() {
-    std::string msg;
-    bool        prefixNeeded = true;
+void report_recompute_pin_string() {
+    report_pin_string = "";
     if (config->_probe->get_state()) {
-        if (prefixNeeded) {
-            prefixNeeded = false;
-            msg += "|Pn:";
-        }
-        msg += 'P';
+        report_pin_string += 'P';
     }
 
     MotorMask lim_pin_state = limits_get_state();
@@ -500,24 +507,15 @@ static std::string pinString() {
         for (size_t axis = 0; axis < n_axis; axis++) {
             if (bitnum_is_true(lim_pin_state, Machine::Axes::motor_bit(axis, 0)) ||
                 bitnum_is_true(lim_pin_state, Machine::Axes::motor_bit(axis, 1))) {
-                if (prefixNeeded) {
-                    prefixNeeded = false;
-                    msg += "|Pn:";
-                }
-                msg += config->_axes->axisName(axis);
+                report_pin_string += config->_axes->axisName(axis);
             }
         }
     }
 
     std::string ctrl_pin_report = config->_control->report_status();
     if (ctrl_pin_report.length()) {
-        if (prefixNeeded) {
-            prefixNeeded = false;
-            msg += "|Pn:";
-        }
-        msg += ctrl_pin_report;
+        report_pin_string += ctrl_pin_report;
     }
-    return msg;
 }
 
 // Define this to do something if a debug request comes in over serial
@@ -566,7 +564,9 @@ void report_realtime_status(Channel& channel) {
     }
     msg << "|FS:" << setprecision(0) << rate << "," << sys.spindle_speed;
 
-    msg << pinString();
+    if (report_pin_string.length()) {
+        msg << "|Pn:" << report_pin_string;
+    }
 
     if (report_wco_counter > 0) {
         report_wco_counter--;
@@ -637,11 +637,10 @@ void report_realtime_status(Channel& channel) {
     msg << "|ISRs:" << Stepper::isr_count;
 #endif
 #ifdef DEBUG_REPORT_HEAP
-    msg << "|Heap:" << esp.getHeapSize();
+    msg << "|Heap:" << xPortGetFreeHeapSize();
 #endif
     msg << ">";
-    // The DebugStream destructor sends the line
-    // when msg goes out of scope
+    // The destructor sends the line when msg goes out of scope
 }
 
 void hex_msg(uint8_t* buf, const char* prefix, int len) {
@@ -667,4 +666,3 @@ void reportTaskStackSize(UBaseType_t& saved) {
 }
 
 void WEAK_LINK display_init() {}
-void WEAK_LINK display(const char* tag, String s) {}
